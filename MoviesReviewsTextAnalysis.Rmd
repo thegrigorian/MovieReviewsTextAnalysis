@@ -1,0 +1,200 @@
+---
+title: "Quiz2"
+author: "Anna Alexandra Grigoryan"
+date: "4/24/2019"
+output: html_document
+---
+## Introduction 
+In this project we will be classifing movie reviews as positive or negative using the text of the review. This is binary classification on the IMDB dataset that contains the text of 50,000 movie reviews from the Internet Movie Database. Those are split into 25,000 reviews for training and 25,000 reviews for testing. The training and testing sets are balanced, such that they contain an equal number of positive and negative reviews.
+
+Loading Keras, as well as a few other required libraries.
+
+```{r}
+library(keras)
+library(dplyr)
+library(ggplot2)
+library(purrr)
+```
+The IMDB dataset comes packaged with Keras. It has already been preprocessed such that the reviews are converted to sequences of integers, where each integer represents a specific word in a dictionary.
+
+All we need is downloading the IMDB dataset and splitting it into train and test.
+
+```{r}
+imdb <- dataset_imdb(num_words = 10000)
+
+c(train_data, train_labels) %<-% imdb$train
+c(test_data, test_labels) %<-% imdb$test
+```
+The index mapping words to integers has to be downloaded separately:
+
+```{r}
+word_index <- dataset_imdb_word_index()
+
+```
+
+## Exploration
+The dataset comes preprocessed: each example being an array of integers representing the words of the movie review. Each label is an integer value of either 0 or 1, where 0 is a negative review, and 1 is a positive review.
+
+
+```{r}
+paste0("Training entries: ", length(train_data), ", labels: ", length(train_labels))
+
+```
+
+ Here’s what the first review looks like:
+ 
+```{r}
+train_data[[1]]
+```
+ 
+ Movie reviews have different lengths.Since inputs to a neural network must be the same length, we’ll need to resolve this later.
+ 
+ 
+```{r}
+length(train_data[[1]])
+length(train_data[[2]])
+```
+ 
+To convert integers back to text, we create a data frame from it the labels and indexes, and use it in both directions.
+
+
+```{r}
+word_index_df <- data.frame(
+  word = names(word_index),
+  idx = unlist(word_index, use.names = FALSE),
+  stringsAsFactors = FALSE
+)
+
+# The first indices are reserved  
+word_index_df <- word_index_df %>% mutate(idx = idx + 3)
+word_index_df <- word_index_df %>%
+  add_row(word = "<PAD>", idx = 0)%>%
+  add_row(word = "<START>", idx = 1)%>%
+  add_row(word = "<UNK>", idx = 2)%>%
+  add_row(word = "<UNUSED>", idx = 3)
+
+word_index_df <- word_index_df %>% arrange(idx)
+
+decode_review <- function(text){
+  paste(map(text, function(number) word_index_df %>%
+              filter(idx == number) %>%
+              select(word) %>% 
+              pull()),
+        collapse = " ")
+}
+```
+ Now if we want to decode, we can do the following:
+ 
+```{r}
+decode_review(train_data[[1]])
+```
+
+
+
+## Data preparation
+
+The reviews  must be converted to tensors before fed into the neural network. We can either convert them into vectors of 0s and 1s, where the sequence [3, 5] would become a 10,000-dimensional vector that is all zeros except for indices 3 and 5, or pad the arrays so they all have the same length. We will use the second approach.
+
+Since the movie reviews must be the same length, we will use the pad_sequences function to standardize the lengths:
+
+
+```{r}
+train_data <- pad_sequences(
+  train_data,
+  value = word_index_df %>% filter(word == "<PAD>") %>% select(idx) %>% pull(),
+  padding = "post",
+  maxlen = 256
+)
+
+test_data <- pad_sequences(
+  test_data,
+  value = word_index_df %>% filter(word == "<PAD>") %>% select(idx) %>% pull(),
+  padding = "post",
+  maxlen = 256
+)
+```
+
+
+
+ 
+If we check the lengths, we will see that they are equal:
+```{r}
+length(train_data[1, ])
+length(train_data[2, ])
+```
+## Model building
+
+
+The neural network is created by stacking layers, so we need to decide on the number of layers and the hidden units in that layers. layers to use in the model?
+The input data consists of an array of word-indices. The labels to predict are either 0 or 1.
+
+
+```{r}
+vocab_size <- 10000
+
+model <- keras_model_sequential()
+model %>% 
+  layer_embedding(input_dim = vocab_size, output_dim = 16) %>%
+  layer_global_average_pooling_1d() %>%
+  layer_dense(units = 16, activation = "relu") %>%
+  layer_dense(units = 1, activation = "sigmoid")
+
+model %>% summary()
+```
+
+
+Embedding layer takes the integer-encoded vocabulary and looks up the embedding vector for each word-index. Global_average_pooling_1d layer returns a fixed-length output vector for each example by averaging over the sequence dimension. This allows the model to handle input of variable length, in the simplest way possible. The last layer is densely connected with a single output node. Using the sigmoid activation function, this value is a float between 0 and 1, representing a probability, or confidence level.
+
+
+## Compilation
+
+```{r}
+model %>% compile(
+  optimizer = 'adam',
+  loss = 'binary_crossentropy',
+  metrics = list('accuracy')
+)
+```
+
+## Training
+We create validation set by setting apart 10,000 examples from the original training data.
+
+
+```{r}
+x_val <- train_data[1:10000, ]
+partial_x_train <- train_data[10001:nrow(train_data), ]
+
+y_val <- train_labels[1:10000]
+partial_y_train <- train_labels[10001:length(train_labels)]
+```
+
+Train the model for 100 epochs in mini-batches of 512 samples. We will also use early stopping
+
+```{r}
+early_stopping <- callback_early_stopping(monitor = 'val_loss', patience = 3)
+
+history <- model %>% fit(
+  partial_x_train,
+  partial_y_train,
+  epochs = 100,
+  batch_size = 256,
+ validation_data = list(x_val, y_val),
+  callbacks = early_stopping,
+  verbose=1
+ 
+)
+```
+
+## Evaluation
+
+Two values are returned for evaluation. Loss (a number which represents our error, lower values are better), and accuracy(the higher the better)
+
+```{r}
+results <- model %>% evaluate(test_data, test_labels)
+results
+```
+```{r}
+plot(history)
+```
+
+
